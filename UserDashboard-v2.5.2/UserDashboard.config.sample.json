@@ -1,0 +1,12 @@
+{
+  "_comment": "OPTIONAL site config. Rename to UserDashboard.config.json and place NEXT TO UserDashboard.exe. Every key is optional - missing keys use the built-in defaults. Malformed JSON is ignored (the app still starts).",
+
+  "RdsSessionHosts": [],
+
+  "PasswordChangeUrlOverride": "",
+
+  "AuditDir": "C:\\GSS\\UserDashboard\\Log",
+
+  "CompanyCodeGroupPrefix": "CC-",
+  "CompanyCodePrimaryAttribute": "comment"
+}

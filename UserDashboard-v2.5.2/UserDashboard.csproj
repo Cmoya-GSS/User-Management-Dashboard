@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>UserDashboard</RootNamespace>
+    <AssemblyName>UserDashboard</AssemblyName>
+    <ApplicationIcon>UserDashboard.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <LangVersion>latest</LangVersion>
+
+    <!-- Version stamp: shown in the title bar, About dialog, audit log startup
+         entry, and file properties. Bump on every release so "which build is
+         deployed?" is answerable at a glance. -->
+    <Version>2.5.3</Version>
+    <FileVersion>2.5.3</FileVersion>
+    <InformationalVersion>2.5.3</InformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- System.DirectoryServices ships with .NET Framework 4.8 - no NuGet needed.
+         Used by AdService and by RdsService's AD-based session-host discovery. -->
+    <Reference Include="System.DirectoryServices" />
+    <Reference Include="System.DirectoryServices.AccountManagement" />
+    <!-- JavaScriptSerializer for the optional UserDashboard.config.json
+         (ships with .NET Framework - no NuGet needed). -->
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+
+</Project>

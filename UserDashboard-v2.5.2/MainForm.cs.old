@@ -1,0 +1,914 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+using System.Windows.Forms;
+using UserDashboard.Forms;
+using UserDashboard.Models;
+using UserDashboard.Services;
+
+namespace UserDashboard;
+
+/// <summary>
+/// The main "User Management Dashboard" window. This is the C# port of
+/// sections 4-13 of UserDashboard.ps1 - status bar, top toolbar,
+/// DataGridView, inline editing, context menu, and CSV import/export.
+/// </summary>
+internal sealed class MainForm : Form
+{
+    // ---------- Services / state ------------------------------------------
+    private readonly AdService _ad;
+    private List<AdUserInfo> _allUsers = new();
+    private List<string> _validGroups   = new();
+    private List<string> _presentGroups = new();
+
+    // ---------- UI controls -----------------------------------------------
+    private readonly TextBox  _txtSearch;
+    private readonly Button   _btnImport, _btnExport, _btnAdd, _btnInfo;
+    private readonly Label    _lblGroup, _lblTip;
+    private readonly ComboBox _cmbGroup;
+    private readonly DataGridView _grid;
+    private readonly StatusStrip _statusStrip;
+    private readonly ToolStripStatusLabel _statusLabel;
+    private readonly Panel _bottomPanel;
+    private readonly System.Windows.Forms.Timer _searchTimer;
+    private readonly ContextMenuStrip _ctx;
+    private readonly ToolStripMenuItem _miReset, _miToggleAcct, _miManageGrp;
+
+    public MainForm()
+    {
+	// Load icon from the executable's folder (embedded at publish)
+    	try { Icon = new System.Drawing.Icon("UserDashboard.ico"); } catch { }
+
+    	// -- AD service -----------------------------------------------------
+    	_ad = new AdService();
+    // ... rest of the existing constructor unchanged ...
+        // -- AD service -----------------------------------------------------
+        _ad = new AdService();
+
+        // -- Form -----------------------------------------------------------
+        Text          = "User Management Dashboard";
+        Size          = new Size(1024, 700);
+        StartPosition = FormStartPosition.CenterScreen;
+        KeyPreview    = true;
+
+        // -- Status bar -----------------------------------------------------
+        _statusLabel = new ToolStripStatusLabel { Text = "Ready" };
+        _statusStrip = new StatusStrip();
+        _statusStrip.Items.Add(_statusLabel);
+        Controls.Add(_statusStrip);
+
+        // -- Bottom action bar (above the status bar) -----------------------
+        _bottomPanel = new Panel { Dock = DockStyle.Bottom, Height = 48 };
+        Controls.Add(_bottomPanel);
+
+        // -- Top controls ---------------------------------------------------
+        _txtSearch = new TextBox
+        {
+            Location = new Point(10, 10),
+            Size     = new Size(300, 25)
+        };
+        Controls.Add(_txtSearch);
+
+        // Debounced search (250ms) so we don't refilter on every keystroke.
+        _searchTimer = new System.Windows.Forms.Timer { Interval = 250 };
+        _searchTimer.Tick += (_, _) => { _searchTimer.Stop(); ApplyFilter(); };
+        _txtSearch.TextChanged += (_, _) => { _searchTimer.Stop(); _searchTimer.Start(); };
+
+        _btnImport = NewToolbarButton("Import CSV",   320, Constants.GssGreen,  100);
+        _btnExport = NewToolbarButton("Export to CSV",425, Constants.GssOrange, 100);
+        _btnAdd    = NewToolbarButton("Add User",     530, Constants.GssOrange,  80);
+        _btnInfo   = NewToolbarButton("Info",         620, Constants.GssOrange,  70);
+        _btnInfo.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+
+        Controls.AddRange(new Control[] { _btnImport, _btnExport, _btnAdd, _btnInfo });
+
+        _btnImport.Click += OnImportCsv;
+        _btnExport.Click += OnExportCsv;
+        _btnAdd   .Click += OnAddUser;
+        _btnInfo  .Click += OnInfo;
+
+        _lblGroup = new Label { Text = "Group:", AutoSize = true,
+                                Anchor = AnchorStyles.Top | AnchorStyles.Right };
+        _cmbGroup = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width  = 230,
+            Anchor = AnchorStyles.Top | AnchorStyles.Right
+        };
+        Controls.Add(_lblGroup);
+        Controls.Add(_cmbGroup);
+        _cmbGroup.SelectedIndexChanged += OnGroupComboChanged;
+
+        _lblTip = new Label
+        {
+            Text      = "Tip: Double-click a cell to edit; right-click for actions.",
+            AutoSize  = true,
+            ForeColor = Constants.GssGreen,
+            Location  = new Point(10, 38)
+        };
+        Controls.Add(_lblTip);
+
+        // -- Grid -----------------------------------------------------------
+        const int gridTop      = 60;
+        const int bottomMargin = 20;
+
+        _grid = new DataGridView
+        {
+            Location                    = new Point(10, gridTop),
+            Size                        = new Size(ClientSize.Width - 20,
+                                              ClientSize.Height - gridTop - _statusStrip.Height - _bottomPanel.Height - bottomMargin),
+            Anchor                      = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
+            ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize,
+            SelectionMode               = DataGridViewSelectionMode.FullRowSelect,
+            MultiSelect                 = false,
+            AllowUserToAddRows          = false,
+            AllowUserToResizeRows       = false,
+            RowHeadersVisible           = false,
+            AutoSizeColumnsMode         = DataGridViewAutoSizeColumnsMode.Fill,
+            BorderStyle                 = BorderStyle.FixedSingle,
+            ShowCellToolTips            = true,
+            EnableHeadersVisualStyles   = false
+        };
+        Controls.Add(_grid);
+
+        // Header style (GSS green)
+        _grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
+        {
+            BackColor = Constants.GssGreen,
+            ForeColor = Color.White,
+            Font      = new Font("Segoe UI", 9f, FontStyle.Bold)
+        };
+        // Alternating-row tint
+        _grid.AlternatingRowsDefaultCellStyle = new DataGridViewCellStyle
+        {
+            BackColor = Constants.AlternatingRowBack
+        };
+
+        // Columns
+        foreach (var col in Constants.AllColumns)
+        {
+            int idx = _grid.Columns.Add(col, col);
+            _grid.Columns[idx].HeaderCell.ToolTipText =
+                "Double-click to edit; right-click row for more";
+        }
+        // Mark read-only columns visually disabled
+        foreach (var name in Constants.ReadOnlyColumns)
+        {
+            var col = _grid.Columns[name]!;
+            col.ReadOnly = true;
+            col.DefaultCellStyle = new DataGridViewCellStyle
+            {
+                BackColor          = Constants.ReadonlyColBack,
+                ForeColor          = SystemColors.GrayText,
+                SelectionBackColor = Constants.ReadonlyColBack,
+                SelectionForeColor = SystemColors.GrayText
+            };
+        }
+
+        // Right-click selects the row under the cursor
+        _grid.CellMouseDown += OnCellMouseDown;
+        _grid.CellEndEdit   += OnCellEndEdit;
+
+        // -- Context menu ---------------------------------------------------
+        _ctx = new ContextMenuStrip();
+        _miReset      = new ToolStripMenuItem("Reset Password");
+        _miToggleAcct = new ToolStripMenuItem("Disable User");
+        _miManageGrp  = new ToolStripMenuItem("Manage Security Groups");
+        _ctx.Items.AddRange(new ToolStripItem[] { _miReset, _miToggleAcct, _miManageGrp });
+        _grid.ContextMenuStrip = _ctx;
+
+        _ctx.Opening      += OnContextMenuOpening;
+        _miReset.Click    += OnResetPassword;
+        _miToggleAcct.Click += OnToggleAccount;
+        _miManageGrp.Click  += OnManageGroups;
+
+        // -- Tooltips -------------------------------------------------------
+        var tt = new ToolTip { ShowAlways = true, InitialDelay = 200,
+                               ReshowDelay = 100, AutoPopDelay = 8000 };
+        tt.SetToolTip(_txtSearch, "Search by name, username, group, or last login.\r\n" +
+                                  "Examples:\r\n- smith admin  -> users with BOTH words\r\n" +
+                                  "- \"global shop\" -> exact phrase");
+        tt.SetToolTip(_btnImport, "Import users from CSV into Active Directory");
+        tt.SetToolTip(_btnExport, "Export current view");
+        tt.SetToolTip(_btnAdd,    "Create a new user");
+        tt.SetToolTip(_cmbGroup,  "Filter by security group");
+        tt.SetToolTip(_grid,      "Double-click to edit; right-click row for actions");
+
+        // -- Resize handling ------------------------------------------------
+        Resize += (_, _) =>
+        {
+            _grid.Size = new Size(
+                ClientSize.Width - 20,
+                ClientSize.Height - gridTop - _statusStrip.Height - _bottomPanel.Height - bottomMargin);
+            LayoutTopRightControls();
+        };
+
+        Shown += (_, _) =>
+        {
+            LayoutTopRightControls();
+            LoadUsers();
+        };
+    }
+
+    private static Button NewToolbarButton(string text, int x, Color back, int width) => new()
+    {
+        Text      = text,
+        Location  = new Point(x, 8),
+        Size      = new Size(width, 28),
+        BackColor = back,
+        ForeColor = Color.White,
+        FlatStyle = FlatStyle.Flat
+    };
+
+    private void LayoutTopRightControls()
+    {
+        _cmbGroup.Location = new Point(ClientSize.Width - _cmbGroup.Width - 10, 8);
+        _lblGroup.Location = new Point(_cmbGroup.Location.X - _lblGroup.Width - 6, 12);
+        _btnInfo .Location = new Point(_lblGroup.Location.X - _btnInfo.Width - 10, 8);
+    }
+
+    private void SetStatus(string text) => _statusLabel.Text = text;
+
+    // ====================================================================
+    //  Data loading & filtering
+    // ====================================================================
+
+    /// <summary>Equivalent to Load-Users in the PowerShell file.</summary>
+    private void LoadUsers()
+    {
+        try
+        {
+            UseWaitCursor = true;
+            SetStatus("Loading users from Active Directory...");
+            Application.DoEvents();
+
+            _allUsers = _ad.LoadAllUsers();
+
+            // Build the "valid groups" list (security groups under CN=Users, minus exclusions).
+            try { _validGroups = _ad.GetAllSecurityGroupNamesUnderUsersContainer(); }
+            catch { _validGroups = new List<string>(); }
+
+            PopulateGrid(_allUsers);
+
+            // Build the present-groups list from currently visible users
+            _presentGroups = ExtractPresentGroupNames(_allUsers);
+            RebuildGroupCombo();
+
+            SetStatus($"Loaded {_allUsers.Count} users from {_ad.DnsRoot}");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                "Error reading users from Active Directory:\n" + ex.Message,
+                "AD Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            _allUsers = new List<AdUserInfo>();
+            PopulateGrid(_allUsers);
+        }
+        finally
+        {
+            UseWaitCursor = false;
+        }
+    }
+
+    private bool _suppressGroupComboEvent;
+
+    private void OnGroupComboChanged(object? sender, EventArgs e)
+    {
+        if (_suppressGroupComboEvent) return;
+        ApplyFilter();
+    }
+
+    private void RebuildGroupCombo()
+    {
+        _suppressGroupComboEvent = true;
+        try
+        {
+            _cmbGroup.Items.Clear();
+            _cmbGroup.Items.Add("All Groups");
+            foreach (var g in _presentGroups)
+                _cmbGroup.Items.Add(g);
+            _cmbGroup.SelectedIndex = 0;
+        }
+        finally
+        {
+            _suppressGroupComboEvent = false;
+        }
+    }
+
+    /// <summary>Equivalent to Apply-Filter in the PowerShell file.</summary>
+    private void ApplyFilter()
+    {
+        string query = _txtSearch.Text.Trim();
+        string? selectedGroup = _cmbGroup.SelectedIndex > 0
+            ? _cmbGroup.SelectedItem?.ToString() : null;
+
+        IEnumerable<AdUserInfo> filtered = _allUsers;
+
+        if (!string.IsNullOrEmpty(query))
+        {
+            // Multi-token AND search with quoted phrases:
+            //   smith admin    -> matches rows containing BOTH "smith" AND "admin"
+            //   "global shop"  -> single token (with the space)
+            var tokens = Regex.Matches(query, "(\"[^\"]+\"|\\S+)")
+                .Cast<Match>()
+                .Select(m => m.Value.Trim())
+                .Select(t => t.StartsWith("\"") && t.EndsWith("\"") ? t.Trim('"') : t)
+                .Where(t => !string.IsNullOrEmpty(t))
+                .ToArray();
+
+            if (tokens.Length > 0)
+            {
+                filtered = filtered.Where(u =>
+                {
+                    string[] haystacks = BuildHaystacks(u);
+                    foreach (var tok in tokens)
+                    {
+                        bool any = haystacks.Any(h =>
+                            h != null && h.IndexOf(tok, StringComparison.OrdinalIgnoreCase) >= 0);
+                        if (!any) return false;
+                    }
+                    return true;
+                });
+            }
+        }
+
+        if (!string.IsNullOrEmpty(selectedGroup))
+        {
+            string sel = AdService.NormalizeGroupName(selectedGroup);
+            filtered = filtered.Where(u =>
+                u.MemberOf.Any(dn => AdService.NormalizeGroupName(dn) == sel));
+        }
+
+        PopulateGrid(filtered.ToList());
+    }
+
+    private static string[] BuildHaystacks(AdUserInfo u)
+    {
+        string groupNames = string.Join("; ",
+            u.MemberOf.Select(AdService.ExtractCn).Where(s => !string.IsNullOrWhiteSpace(s)));
+        string lastLogin = u.LastLogonDate.HasValue
+            ? u.LastLogonDate.Value.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)
+            : "Never";
+        return new[]
+        {
+            u.DisplayName ?? "", u.GivenName ?? "", u.Surname ?? "",
+            u.SamAccountName, groupNames, lastLogin
+        };
+    }
+
+    /// <summary>Equivalent to Populate-Grid in the PowerShell file.</summary>
+    private void PopulateGrid(List<AdUserInfo> users)
+    {
+        _grid.Rows.Clear();
+
+        foreach (var u in users)
+        {
+            string groups = string.Join("; ",
+                u.MemberOf
+                 .Select(AdService.ExtractCn)
+                 .Where(g => !string.IsNullOrWhiteSpace(g) &&
+                             !Constants.ExcludedGroups.Contains(g) &&
+                             (_validGroups.Count == 0 ||
+                              _validGroups.Contains(g, StringComparer.OrdinalIgnoreCase)))
+                 .Distinct(StringComparer.OrdinalIgnoreCase)
+                 .OrderBy(g => g, StringComparer.OrdinalIgnoreCase));
+
+            string lastLogin = u.LastLogonDate.HasValue
+                ? u.LastLogonDate.Value.ToString("yyyy-MM-dd HH:mm",
+                                                 CultureInfo.InvariantCulture)
+                : "Never";
+
+            string username = !string.IsNullOrWhiteSpace(u.UserPrincipalName)
+                ? u.UserPrincipalName!
+                : (u.SamAccountName + _ad.UpnSuffix);
+
+            int idx = _grid.Rows.Add(
+                u.GivenName, u.Initials, u.Surname, u.DisplayName,
+                username, lastLogin, groups);
+
+            var row = _grid.Rows[idx];
+            row.Tag = u.SamAccountName;
+            ApplyEnabledStyle(row, u.Enabled);
+        }
+    }
+
+    private static List<string> ExtractPresentGroupNames(List<AdUserInfo> users)
+    {
+        return users
+            .SelectMany(u => u.MemberOf.Select(AdService.ExtractCn))
+            .Where(g => !string.IsNullOrWhiteSpace(g) && !Constants.ExcludedGroups.Contains(g))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(g => g, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>Equivalent to Set-RowEnabledStyle in the PowerShell file.</summary>
+    private static void ApplyEnabledStyle(DataGridViewRow row, bool enabled)
+    {
+        foreach (DataGridViewCell cell in row.Cells)
+        {
+            if (enabled)
+            {
+                cell.Style.BackColor          = Color.Empty;
+                cell.Style.SelectionBackColor = Color.Empty;
+                cell.Style.ForeColor          = Color.Empty;
+                cell.Style.SelectionForeColor = Color.Empty;
+                cell.Style.Font               = null!;
+            }
+            else
+            {
+                cell.Style.BackColor          = Constants.DisabledAcctBack;
+                cell.Style.SelectionBackColor = Constants.DisabledAcctSelBack;
+                cell.Style.ForeColor          = SystemColors.GrayText;
+                cell.Style.SelectionForeColor = SystemColors.GrayText;
+                cell.Style.Font               = new Font("Segoe UI", 9f, FontStyle.Italic);
+            }
+        }
+
+        try
+        {
+            row.Cells[Constants.ColDisplayName].ToolTipText =
+                enabled ? "" : "Account is DISABLED in Active Directory";
+        }
+        catch { /* best effort */ }
+    }
+
+    // ====================================================================
+    //  Grid event handlers
+    // ====================================================================
+
+    private void OnCellMouseDown(object? sender, DataGridViewCellMouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Right && e.RowIndex >= 0)
+        {
+            _grid.ClearSelection();
+            _grid.Rows[e.RowIndex].Selected = true;
+            _grid.CurrentCell = _grid.Rows[e.RowIndex].Cells[0];
+        }
+    }
+
+    /// <summary>Equivalent to the $grid.Add_CellEndEdit handler in the PS file.</summary>
+    private void OnCellEndEdit(object? sender, DataGridViewCellEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+
+        var row = _grid.Rows[e.RowIndex];
+        string? sam = row.Tag as string;
+        if (string.IsNullOrEmpty(sam)) return;
+
+        string colName = _grid.Columns[e.ColumnIndex].Name;
+        if (Constants.ReadOnlyColumns.Contains(colName)) return;
+
+        string? newValue = row.Cells[e.ColumnIndex].Value?.ToString();
+
+        try
+        {
+            switch (colName)
+            {
+                case Constants.ColFirstName:
+                    _ad.SetUserAttribute(sam, "givenName", newValue);
+                    break;
+                case Constants.ColMiddleInitials:
+                    _ad.SetUserAttribute(sam, "initials", newValue);
+                    break;
+                case Constants.ColLastName:
+                    _ad.SetUserAttribute(sam, "sn", newValue);
+                    break;
+                case Constants.ColDisplayName:
+                    _ad.SetDisplayName(sam, newValue ?? string.Empty);
+                    break;
+                default:
+                    return;
+            }
+
+            // Refresh row from AD so the grid reflects the actual directory state.
+            var fresh = _ad.GetUser(sam);
+            ReplaceCachedUser(sam, fresh);
+            RefreshRow(row, fresh);
+
+            AuditLogger.Write("EditUser", sam, $"{colName}='{newValue}'");
+            SetStatus("Changes saved");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "Change failed:\r\n\r\n" + ex.Message);
+            SetStatus("Change failed");
+        }
+    }
+
+    private void ReplaceCachedUser(string sam, AdUserInfo fresh)
+    {
+        for (int i = 0; i < _allUsers.Count; i++)
+        {
+            if (string.Equals(_allUsers[i].SamAccountName, sam, StringComparison.OrdinalIgnoreCase))
+            {
+                _allUsers[i] = fresh;
+                return;
+            }
+        }
+    }
+
+    private void RefreshRow(DataGridViewRow row, AdUserInfo u)
+    {
+        row.Cells[Constants.ColFirstName     ].Value = u.GivenName;
+        row.Cells[Constants.ColMiddleInitials].Value = u.Initials;
+        row.Cells[Constants.ColLastName      ].Value = u.Surname;
+        row.Cells[Constants.ColDisplayName   ].Value = u.DisplayName;
+        row.Cells[Constants.ColUsername      ].Value =
+            !string.IsNullOrWhiteSpace(u.UserPrincipalName)
+                ? u.UserPrincipalName!
+                : (u.SamAccountName + _ad.UpnSuffix);
+        row.Tag = u.SamAccountName;
+        ApplyEnabledStyle(row, u.Enabled);
+    }
+
+    // ====================================================================
+    //  Context menu
+    // ====================================================================
+
+    private AdUserInfo? GetSelectedUser()
+    {
+        if (_grid.SelectedRows.Count == 0) return null;
+        string? sam = _grid.SelectedRows[0].Tag as string;
+        if (string.IsNullOrEmpty(sam)) return null;
+        return _allUsers.FirstOrDefault(u =>
+            string.Equals(u.SamAccountName, sam, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void OnContextMenuOpening(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        var u = GetSelectedUser();
+        if (u == null)
+        {
+            _miToggleAcct.Enabled = false;
+            _miToggleAcct.Text    = "Disable User";
+            return;
+        }
+        _miToggleAcct.Enabled = true;
+        _miToggleAcct.Text    = u.Enabled ? "Disable User" : "Enable User";
+    }
+
+    private void OnResetPassword(object? sender, EventArgs e)
+    {
+        var u = GetSelectedUser();
+        if (u == null) return;
+
+        string display = !string.IsNullOrWhiteSpace(u.DisplayName) ? u.DisplayName! : u.SamAccountName;
+        using var dlg = new ResetPasswordForm(_ad, u.SamAccountName, display);
+        if (dlg.ShowDialog(this) == DialogResult.OK)
+        {
+            SetStatus($"Password reset for {u.SamAccountName}");
+        }
+    }
+
+    private void OnToggleAccount(object? sender, EventArgs e)
+    {
+        var u = GetSelectedUser();
+        if (u == null) return;
+
+        string action = u.Enabled ? "Disable" : "Enable";
+        string name   = !string.IsNullOrWhiteSpace(u.DisplayName) ? u.DisplayName! : u.SamAccountName;
+
+        var res = MessageBox.Show(this,
+            $"Are you sure you want to {action} the account for:\r\n\r\n{name} ({u.SamAccountName})?",
+            $"{action} User",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (res != DialogResult.Yes) return;
+
+        try
+        {
+            if (u.Enabled) _ad.DisableAccount(u.SamAccountName);
+            else           _ad.EnableAccount (u.SamAccountName);
+
+            AuditLogger.Write($"{action} User", u.SamAccountName,
+                              $"{action}d account for '{name}'");
+            SetStatus($"{action}d {u.SamAccountName}");
+
+            u.Enabled = !u.Enabled;
+            var row = FindRowBySam(u.SamAccountName);
+            if (row != null) ApplyEnabledStyle(row, u.Enabled);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"{action} failed for '{u.SamAccountName}':\r\n{ex.Message}");
+            SetStatus($"{action} failed");
+        }
+    }
+
+    private void OnManageGroups(object? sender, EventArgs e)
+    {
+        var u = GetSelectedUser();
+        if (u == null) return;
+
+        // Available = present-in-grid; fall back to validGroups if needed.
+        var avail = _presentGroups.Count > 0 ? _presentGroups : _validGroups;
+
+        using var dlg = new ManageGroupsForm(_ad, u, avail);
+        if (dlg.ShowDialog(this) == DialogResult.OK)
+        {
+            // Refresh the affected user
+            try
+            {
+                var fresh = _ad.GetUser(u.SamAccountName);
+                ReplaceCachedUser(u.SamAccountName, fresh);
+                ApplyFilter();
+            }
+            catch
+            {
+                LoadUsers();
+            }
+        }
+    }
+
+    private DataGridViewRow? FindRowBySam(string sam)
+    {
+        foreach (DataGridViewRow r in _grid.Rows)
+        {
+            if (r != null && !r.IsNewRow &&
+                string.Equals(r.Tag as string, sam, StringComparison.OrdinalIgnoreCase))
+                return r;
+        }
+        return null;
+    }
+
+    // ====================================================================
+    //  Top-bar actions
+    // ====================================================================
+
+    private void OnInfo(object? sender, EventArgs e)
+    {
+        MessageBox.Show(this,
+            "Please submit a cloud request https://www.gss-service.com/ to Delete Users.\r\n\r\n" +
+            "Please submit a cloud request for any bugs with this UserDashboard.",
+            "User Dashboard Info",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+    }
+
+    private void OnAddUser(object? sender, EventArgs e)
+    {
+        using var dlg = new AddUserForm(_ad);
+        if (dlg.ShowDialog(this) == DialogResult.OK)
+        {
+            LoadUsers();
+        }
+    }
+
+    // -- CSV export ---------------------------------------------------------
+
+    private void OnExportCsv(object? sender, EventArgs e)
+    {
+        if (_grid.Rows.Count == 0)
+        {
+            MessageBox.Show(this, "Nothing to export");
+            return;
+        }
+
+        using var dlg = new SaveFileDialog
+        {
+            Filter   = "CSV (*.csv)|*.csv",
+            FileName = "AD_Users.csv"
+        };
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            using var sw = new StreamWriter(dlg.FileName, false, System.Text.Encoding.UTF8);
+            sw.WriteLine("FirstName,MiddleInitials,LastName,DisplayName,Username,LastLogin,SecurityGroups");
+
+            int count = 0;
+            foreach (DataGridViewRow row in _grid.Rows)
+            {
+                if (row.IsNewRow) continue;
+                sw.WriteLine(string.Join(",", new[]
+                {
+                    Csv(row.Cells[Constants.ColFirstName     ].Value?.ToString()),
+                    Csv(row.Cells[Constants.ColMiddleInitials].Value?.ToString()),
+                    Csv(row.Cells[Constants.ColLastName      ].Value?.ToString()),
+                    Csv(row.Cells[Constants.ColDisplayName   ].Value?.ToString()),
+                    Csv(row.Cells[Constants.ColUsername      ].Value?.ToString()),
+                    Csv(row.Cells[Constants.ColLastLogin     ].Value?.ToString()),
+                    Csv(row.Cells[Constants.ColSecurityGroups].Value?.ToString()),
+                }));
+                count++;
+            }
+
+            SetStatus($"Exported {count} users");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "Export failed:\r\n" + ex.Message,
+                "Export Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private static string Csv(string? v)
+    {
+        v ??= string.Empty;
+        bool needs = v.IndexOfAny(new[] { ',', '"', '\r', '\n' }) >= 0;
+        return needs ? "\"" + v.Replace("\"", "\"\"") + "\"" : v;
+    }
+
+    // -- CSV import ---------------------------------------------------------
+
+    private void OnImportCsv(object? sender, EventArgs e)
+    {
+        MessageBox.Show(this,
+            "CSV header should include Username, GivenName, MiddleInitial, Surname, " +
+            "DisplayName, UserPrincipalName, Password, and Path. GivenName may be left blank, " +
+            "but Password and the other required fields must be populated.",
+            "Import Requirements",
+            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+
+        using var dlg = new OpenFileDialog
+        {
+            Filter = "CSV (*.csv)|*.csv",
+            Title  = "Select user import CSV"
+        };
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            var rows = ReadCsv(dlg.FileName);
+            if (rows.Count == 0)
+            {
+                MessageBox.Show(this, "The selected CSV file is empty.",
+                    "Import CSV", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string[] required = { "Username","GivenName","MiddleInitial","Surname",
+                                  "DisplayName","UserPrincipalName","Password","Path" };
+            var headers = rows[0].Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var missing = required.Where(h => !headers.Contains(h)).ToList();
+            if (missing.Count > 0)
+            {
+                MessageBox.Show(this,
+                    "CSV is missing required columns:\r\n\r\n" + string.Join("\r\n", missing),
+                    "Invalid CSV Format", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            int created = 0, skipped = 0, failed = 0;
+            var failMessages = new List<string>();
+
+            // Small local helper: net48's Dictionary has no GetValueOrDefault.
+            static string Get(Dictionary<string, string> d, string k) =>
+                d.TryGetValue(k, out var v) ? v : string.Empty;
+
+            foreach (var account in rows)
+            {
+                string username = Get(account, "Username").Trim();
+                if (string.IsNullOrWhiteSpace(username)) continue;
+
+                var missingFields = new List<string>();
+                void Need(string key) {
+                    if (string.IsNullOrWhiteSpace(Get(account, key)))
+                        missingFields.Add(key);
+                }
+                Need("Username"); Need("Surname"); Need("DisplayName");
+                Need("UserPrincipalName"); Need("Password"); Need("Path");
+
+                if (missingFields.Count > 0)
+                {
+                    failed++;
+                    string msg = $"Failed to create {username}: missing required field(s): {string.Join(", ", missingFields)}";
+                    failMessages.Add(msg);
+                    AuditLogger.Write("ImportFail", username, msg);
+                    continue;
+                }
+
+                if (_ad.UserExists(username))
+                {
+                    skipped++;
+                    AuditLogger.Write("ImportSkip", username, "User already exists");
+                    continue;
+                }
+
+                try
+                {
+                    _ad.CreateUser(new AdService.CreateUserRequest
+                    {
+                        SamAccountName    = username,
+                        UserPrincipalName = account["UserPrincipalName"].Trim(),
+                        DisplayName       = account["DisplayName"].Trim(),
+                        Surname           = account["Surname"].Trim(),
+                        GivenName         = NullIfBlank(Get(account, "GivenName")),
+                        Initials          = NullIfBlank(Get(account, "MiddleInitial")),
+                        Password          = account["Password"],
+                        Path              = account["Path"].Trim(),
+                        PasswordNeverExpires = true
+                    });
+                    created++;
+                    AuditLogger.Write("ImportCreate", username, "User created via CSV import");
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    failMessages.Add($"Failed to create {username}: {ex.Message}");
+                    AuditLogger.Write("ImportFail", username, ex.Message);
+                }
+            }
+
+            LoadUsers();
+            SetStatus($"Import complete. Created: {created} | Skipped: {skipped} | Failed: {failed}");
+
+            string details = failMessages.Count == 0
+                ? "No errors."
+                : string.Join("\r\n", failMessages.Take(8)) +
+                  (failMessages.Count > 8 ? $"\r\n...and {failMessages.Count - 8} more" : "");
+
+            MessageBox.Show(this,
+                $"Import complete.\r\n\r\nCreated: {created}\r\nSkipped: {skipped}\r\nFailed: {failed}\r\n\r\nDetails:\r\n{details}",
+                "Import Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Import failed");
+            MessageBox.Show(this, "Import failed:\r\n\r\n" + ex.Message,
+                "Import Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private static string? NullIfBlank(string s) =>
+        string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    /// <summary>Tiny RFC-4180 CSV reader (handles quotes & embedded commas).</summary>
+    private static List<Dictionary<string, string>> ReadCsv(string path)
+    {
+        var rows = new List<Dictionary<string, string>>();
+        using var sr = new StreamReader(path);
+
+        var headerFields = ParseCsvLine(sr);
+        if (headerFields == null) return rows;
+
+        while (true)
+        {
+            var fields = ParseCsvLine(sr);
+            if (fields == null) break;
+
+            var row = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < headerFields.Count; i++)
+            {
+                row[headerFields[i]] = i < fields.Count ? fields[i] : "";
+            }
+            rows.Add(row);
+        }
+        return rows;
+    }
+
+    private static List<string>? ParseCsvLine(StreamReader sr)
+    {
+        if (sr.EndOfStream) return null;
+        var fields = new List<string>();
+        var sb = new System.Text.StringBuilder();
+        bool inQuotes = false;
+
+        while (true)
+        {
+            int ci = sr.Read();
+            if (ci < 0)
+            {
+                if (sb.Length > 0 || fields.Count > 0) fields.Add(sb.ToString());
+                return fields.Count > 0 ? fields : null;
+            }
+            char c = (char)ci;
+
+            if (inQuotes)
+            {
+                if (c == '"')
+                {
+                    if (sr.Peek() == '"') { sr.Read(); sb.Append('"'); }
+                    else inQuotes = false;
+                }
+                else sb.Append(c);
+            }
+            else
+            {
+                if (c == ',')           { fields.Add(sb.ToString()); sb.Clear(); }
+                else if (c == '"')      { inQuotes = true; }
+                else if (c == '\r')     { /* swallow */ }
+                else if (c == '\n')     { fields.Add(sb.ToString()); return fields; }
+                else                    { sb.Append(c); }
+            }
+        }
+    }
+
+    // ====================================================================
+    //  Cleanup
+    // ====================================================================
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _ad?.Dispose();
+            _searchTimer?.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+}

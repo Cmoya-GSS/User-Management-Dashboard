@@ -1,0 +1,4 @@
+Username,GivenName,MiddleInitial,Surname,DisplayName,UserPrincipalName,Password,Path
+jdoe,John,A,Doe,John A. Doe,jdoe@corp.example.com,Welcome123!,"CN=Users,DC=corp,DC=example,DC=com"
+asmith,Alice,,Smith,Alice Smith,asmith@corp.example.com,Welcome123!,"CN=Users,DC=corp,DC=example,DC=com"
+bjones,Bob,M,Jones,Bob M. Jones,bjones@corp.example.com,Welcome123!,"OU=Engineering,DC=corp,DC=example,DC=com"

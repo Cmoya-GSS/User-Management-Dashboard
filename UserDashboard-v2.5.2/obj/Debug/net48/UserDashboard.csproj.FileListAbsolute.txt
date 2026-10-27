@@ -1,0 +1,10 @@
+C:\Users\cmoya\Desktop\New UserDashboard\UserDashboard-v2.4.1\bin\Debug\net48\UserDashboard.exe.config
+C:\Users\cmoya\Desktop\New UserDashboard\UserDashboard-v2.4.1\bin\Debug\net48\UserDashboard.exe
+C:\Users\cmoya\Desktop\New UserDashboard\UserDashboard-v2.4.1\bin\Debug\net48\UserDashboard.pdb
+C:\Users\cmoya\Desktop\New UserDashboard\UserDashboard-v2.4.1\obj\Debug\net48\UserDashboard.csproj.AssemblyReference.cache
+C:\Users\cmoya\Desktop\New UserDashboard\UserDashboard-v2.4.1\obj\Debug\net48\UserDashboard.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\cmoya\Desktop\New UserDashboard\UserDashboard-v2.4.1\obj\Debug\net48\UserDashboard.AssemblyInfoInputs.cache
+C:\Users\cmoya\Desktop\New UserDashboard\UserDashboard-v2.4.1\obj\Debug\net48\UserDashboard.AssemblyInfo.cs
+C:\Users\cmoya\Desktop\New UserDashboard\UserDashboard-v2.4.1\obj\Debug\net48\UserDashboard.csproj.CoreCompileInputs.cache
+C:\Users\cmoya\Desktop\New UserDashboard\UserDashboard-v2.4.1\obj\Debug\net48\UserDashboard.exe
+C:\Users\cmoya\Desktop\New UserDashboard\UserDashboard-v2.4.1\obj\Debug\net48\UserDashboard.pdb
