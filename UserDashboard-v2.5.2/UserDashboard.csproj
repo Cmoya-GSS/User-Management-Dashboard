@@ -15,9 +15,9 @@
     <!-- Version stamp: shown in the title bar, About dialog, audit log startup
          entry, and file properties. Bump on every release so "which build is
          deployed?" is answerable at a glance. -->
-    <Version>2.5.3</Version>
-    <FileVersion>2.5.3</FileVersion>
-    <InformationalVersion>2.5.3</InformationalVersion>
+    <Version>2.5.5</Version>
+    <FileVersion>2.5.5</FileVersion>
+    <InformationalVersion>2.5.5</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

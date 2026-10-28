@@ -136,7 +136,11 @@ Columns: Timestamp, Operator, Machine, Action, Target, Details.
 ## Company codes (Global Shop)
 
 Replaces the old per-combination GPO + `C:\GSS\PowerShell\<code>` copy of
-`GSSLOGIN.DIR`.
+`GSSLOGIN.DIR`. Customer environments that already have company-code
+selection in place use **their own** AD groups and GPOs (names and
+combinations differ per site). This program does not parse or manage those
+groups. It adds a parallel `CC-*` model and leaves the old setup running
+until you migrate a user.
 
 **Access model**
 
@@ -145,10 +149,13 @@ Replaces the old per-combination GPO + `C:\GSS\PowerShell\<code>` copy of
 - The user's default code is stored in the AD `comment` field as `GSSCC:PLA`
   (`CompanyCodePrimaryAttribute`). This is a base-schema attribute; Exchange
   `extensionAttribute*` fields are not required.
-- **Users assigned to no company-code groups are unrestricted** — they see
-  every company code. The logon script deletes `%USERPROFILE%\GSSLOGIN.DIR`
-  in that case so a leftover restriction file cannot linger.
-- Assigning one or more codes restricts that user to the checked list.
+- **Users assigned to one or more `CC-*` groups** are restricted to those
+  codes. The new logon script writes `GSSLOGIN.DIR`.
+- **Users with no `CC-*` groups:** the logon script leaves `GSSLOGIN.DIR`
+  alone (`$CoexistenceWithLegacyGpo = $true`). Whatever that customer's
+  existing GPO already copied keeps working, regardless of how their groups
+  are named. After those GPOs are disabled, set the flag to `$false` so
+  unassigned users are unrestricted (file deleted).
 
 **Dashboard**
 
@@ -182,7 +189,8 @@ works the same way, with one shared folder instead of one folder per code.
    apply to RDS hosts. Do not link it only to a Users OU.
 3. Leave **Authenticated Users** with Read and **Apply group policy**.
    Do not security-filter this GPO to `CC-*` groups (unlike the old
-   per-combination GPOs). The script is a no-op for unassigned users.
+   per-combination GPOs). Users still on a customer's existing company-code
+   GPOs are left alone until you add them to `CC-*` groups.
 4. Edit the GPO and set these so logon scripts actually run on RDS
    (Fast Logon Optimization otherwise skips them):
    - **Computer Configuration → Policies → Administrative Templates →
@@ -198,10 +206,41 @@ works the same way, with one shared folder instead of one folder per code.
    - **Add** → Browse → `Apply-CompanyCodes.vbs` → OK → Apply.
      The VBS launches `C:\GSS\PowerShell\CompanyCodes\Apply-CompanyCodes.ps1`
      when that file exists, otherwise the copy next to the VBS.
-6. Disable the old per-combination company-code GPOs and remove
-   `C:\GSS\PowerShell\<code>` folders so they cannot overwrite GSSLOGIN.DIR.
-7. On an RDS host run `gpupdate /force`, then **Sign out** TEST (not
+6. Give this GPO the **highest link order** (smallest number) so it runs
+   after any existing company-code logon scripts and can overwrite
+   `GSSLOGIN.DIR` for users you have moved to `CC-*` groups. Do **not**
+   disable the old GPOs until those users are migrated (see below).
+7. On an RDS host run `gpupdate /force`, then **Sign out** a test user (not
    disconnect) and log on again.
+
+**Existing environments (any customer group/GPO setup)**
+
+Group names and GPO combinations differ per customer (`E2P`, `ABA and ZAB`,
+`SCR and ZTS`, or unrelated names). The dashboard and the new logon script
+**only look at the `CC-` prefix**. They do not rename, join, or remove the
+customer's existing groups. Until a user is in a `CC-*` group, the new
+script does not change their `GSSLOGIN.DIR`, so the customer's GPO keeps
+copying its static file.
+
+Migrate in this order:
+
+1. Deploy the new GPO **in coexistence** (default). Leave the customer's
+   existing company-code GPOs linked.
+2. For each user (or a pilot first), in User Dashboard tick the company
+   codes they should see. That creates/uses `CC-E2P`, `CC-ABA`, etc. and
+   adds the user. They can stay in the old groups during the overlap.
+3. Confirm a full sign-out: `%TEMP%\Apply-CompanyCodes.log` shows
+   `AD codes=[...]` and `GSSLOGIN.DIR` matches.
+4. Repeat until every user who had an old company-code GPO is in the
+   matching `CC-*` group(s).
+5. Disable (then later delete) the old per-combination GPOs. Remove the
+   customer's per-code folders under `C:\GSS\PowerShell\` — do not remove
+   `C:\GSS\PowerShell\CompanyCodes`.
+6. Optionally remove users from the old groups (they no longer grant
+   Global Shop visibility).
+7. In `Apply-CompanyCodes.ps1` set `$CoexistenceWithLegacyGpo = $false`,
+   re-run setup Step 4c (or copy the script to each host), so users with
+   **no** `CC-*` groups become unrestricted.
 
 **Confirm the GPO applied** (as TEST, after a full sign-out):
 

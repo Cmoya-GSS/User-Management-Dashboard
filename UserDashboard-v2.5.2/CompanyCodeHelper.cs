@@ -11,6 +11,11 @@ namespace UserDashboard;
 /// Global Shop company-code access is modeled as one AD security group per
 /// code, named {prefix}{code} (default prefix "CC-"). Users with no such
 /// memberships are unrestricted and see every company code at logon.
+///
+/// Existing customer environments often already have their own groups and
+/// GPOs (names and combinations vary). Those are left alone. This helper
+/// only recognizes the CC-* prefix; it does not parse or manage legacy
+/// combination groups.
 /// </summary>
 internal static class CompanyCodeHelper
 {
@@ -57,7 +62,7 @@ internal static class CompanyCodeHelper
         return string.IsNullOrWhiteSpace(rest) ? token : token + Environment.NewLine + rest;
     }
 
-    public static bool IsCompanyCodeGroup(string? groupName)
+    public static bool IsPrefixedCompanyCodeGroup(string? groupName)
     {
         if (string.IsNullOrWhiteSpace(groupName)) return false;
         string prefix = Prefix;
@@ -65,11 +70,19 @@ internal static class CompanyCodeHelper
                && groupName.Length > prefix.Length;
     }
 
+    /// <summary>
+    /// Groups this program owns (CC-*). Hidden from generic Manage Security
+    /// Groups. Customer legacy groups are not included.
+    /// </summary>
+    public static bool IsCompanyCodeGroup(string? groupName) =>
+        IsPrefixedCompanyCodeGroup(groupName);
+
     public static string GroupNameForCode(string code) => Prefix + code;
 
+    /// <summary>Code from a CC-* group name, or null.</summary>
     public static string? CodeFromGroupName(string? groupName)
     {
-        if (!IsCompanyCodeGroup(groupName)) return null;
+        if (!IsPrefixedCompanyCodeGroup(groupName)) return null;
         return groupName!.Substring(Prefix.Length).Trim().ToUpperInvariant();
     }
 

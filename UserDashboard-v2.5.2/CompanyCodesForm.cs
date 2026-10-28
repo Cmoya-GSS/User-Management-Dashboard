@@ -9,11 +9,8 @@ using UserDashboard.Services;
 namespace UserDashboard.Forms;
 
 /// <summary>
-/// Assign Global Shop company codes to one user by toggling CC-* group
-/// membership and storing the default code in an AD attribute.
-///
-/// Policy: a user with zero company-code groups is unrestricted and sees
-/// every company code at logon (no GSSLOGIN.DIR restriction).
+/// Assign Global Shop company codes to one user via CC-* groups.
+/// Existing customer groups/GPOs are not read or changed here.
 /// </summary>
 internal sealed class CompanyCodesForm : Form
 {
@@ -73,9 +70,9 @@ internal sealed class CompanyCodesForm : Form
             AutoSize  = true,
             MaximumSize = new Size(510, 0),
             Margin    = new Padding(0, 0, 0, 8),
-            Text      = "Users with no company-code groups are unrestricted and see every " +
-                        "company code. Assigning one or more codes limits that user to the " +
-                        "checked list. Changes apply at next logon."
+            Text      = "This screen uses CC-* groups only. Existing customer groups and " +
+                        "GPOs are left as they are. Users with no CC-* groups keep whatever " +
+                        "their current GPO already set. Changes apply at next logon."
         };
         root.Controls.Add(policy, 0, 1);
 
@@ -239,7 +236,7 @@ internal sealed class CompanyCodesForm : Form
         foreach (var name in _ad.GetAllSecurityGroupNamesUnderUsersContainer())
         {
             string? code = CompanyCodeHelper.CodeFromGroupName(name);
-            if (!string.IsNullOrWhiteSpace(code)) codes.Add(code!);
+            if (code != null) codes.Add(code);
         }
         foreach (var code in CompanyCodeHelper.CodesFromUser(_user))
             codes.Add(code);
@@ -363,8 +360,10 @@ internal sealed class CompanyCodesForm : Form
     private void OnApply(object? sender, EventArgs e)
     {
         var want = new HashSet<string>(CheckedCodes(), StringComparer.OrdinalIgnoreCase);
-        var toAdd    = want.Except(_initialCodes, StringComparer.OrdinalIgnoreCase).ToList();
-        var toRemove = _initialCodes.Except(want, StringComparer.OrdinalIgnoreCase).ToList();
+        var current = new HashSet<string>(CompanyCodeHelper.CodesFromUser(_user),
+                                          StringComparer.OrdinalIgnoreCase);
+        var toAdd    = want.Except(current, StringComparer.OrdinalIgnoreCase).ToList();
+        var toRemove = current.Except(want, StringComparer.OrdinalIgnoreCase).ToList();
         string? primary = want.Count == 0
             ? null
             : (_cmbDefault.SelectedItem?.ToString() ?? want.First());
@@ -372,8 +371,8 @@ internal sealed class CompanyCodesForm : Form
         bool primaryChanged = !string.Equals(primary ?? string.Empty,
                                              _initialPrimary ?? string.Empty,
                                              StringComparison.OrdinalIgnoreCase);
-
-        if (toAdd.Count == 0 && toRemove.Count == 0 && !primaryChanged)
+        bool codesChanged = !_initialCodes.SetEquals(want);
+        if (!codesChanged && !primaryChanged)
         {
             DialogResult = DialogResult.OK;
             Close();
@@ -385,13 +384,22 @@ internal sealed class CompanyCodesForm : Form
         foreach (var code in toAdd)
         {
             string g = CompanyCodeHelper.GroupNameForCode(code);
-            try { _ad.AddUserToGroup(_user.SamAccountName, g); }
+            try
+            {
+                if (!_ad.GroupExists(g))
+                    _ad.CreateSecurityGroup(g, $"Global Shop company code {code}");
+                _ad.AddUserToGroup(_user.SamAccountName, g);
+            }
             catch (Exception ex) { errors.Add($"Add '{g}': {ex.Message}"); }
         }
         foreach (var code in toRemove)
         {
             string g = CompanyCodeHelper.GroupNameForCode(code);
-            try { _ad.RemoveUserFromGroup(_user.SamAccountName, g); }
+            try
+            {
+                if (_ad.GroupExists(g))
+                    _ad.RemoveUserFromGroup(_user.SamAccountName, g);
+            }
             catch (Exception ex) { errors.Add($"Remove '{g}': {ex.Message}"); }
         }
 

@@ -67,8 +67,9 @@ internal sealed class BulkCompanyCodesForm : Form
             AutoSize    = true,
             MaximumSize = new Size(510, 0),
             Margin      = new Padding(0, 0, 0, 8),
-            Text        = "Users with no company-code groups stay unrestricted and see every " +
-                          "company code. Use Clear to put selected users back in that state."
+            Text        = "This only changes CC-* groups. Existing customer groups and GPOs " +
+                          "are left as they are. Clear removes CC-* membership so the user's " +
+                          "current GPO keeps control until you migrate them."
         };
         root.Controls.Add(policy, 0, 1);
 
@@ -212,7 +213,7 @@ internal sealed class BulkCompanyCodesForm : Form
         foreach (var name in _ad.GetAllSecurityGroupNamesUnderUsersContainer())
         {
             string? code = CompanyCodeHelper.CodeFromGroupName(name);
-            if (!string.IsNullOrWhiteSpace(code)) codes.Add(code!);
+            if (code != null) codes.Add(code);
         }
         foreach (var u in _users)
             foreach (var code in CompanyCodeHelper.CodesFromUser(u))
@@ -280,8 +281,9 @@ internal sealed class BulkCompanyCodesForm : Form
         }
 
         string prompt = clearing
-            ? $"CLEAR all company-code groups for {_users.Count} user(s)?\r\n\r\n" +
-              "They will be unrestricted and see every company code at next logon."
+            ? $"CLEAR CC-* company-code groups for {_users.Count} user(s)?\r\n\r\n" +
+              "Existing customer groups are not changed. Those users keep their " +
+              "current GPO until you assign CC-* groups again."
             : $"{(adding ? "ADD" : "REMOVE")} {_users.Count} user(s) " +
               $"{(adding ? "to" : "from")} {codes.Count} company code(s):\r\n\r\n  " +
               string.Join(", ", codes) + "\r\n\r\nProceed?";
@@ -310,8 +312,19 @@ internal sealed class BulkCompanyCodesForm : Form
                 string g = CompanyCodeHelper.GroupNameForCode(code);
                 try
                 {
-                    if (clearing || !adding) _ad.RemoveUserFromGroup(u.SamAccountName, g);
-                    else                     _ad.AddUserToGroup(u.SamAccountName, g);
+                    if (clearing || !adding)
+                    {
+                        if (_ad.GroupExists(g))
+                            _ad.RemoveUserFromGroup(u.SamAccountName, g);
+                        else
+                        { skipped++; continue; }
+                    }
+                    else
+                    {
+                        if (!_ad.GroupExists(g))
+                            _ad.CreateSecurityGroup(g, $"Global Shop company code {code}");
+                        _ad.AddUserToGroup(u.SamAccountName, g);
+                    }
                     changes++;
                     userChanged = true;
                     if (adding && !clearing) current.Add(code);
