@@ -12,12 +12,17 @@
     GPO + C:\GSS\PowerShell\<code> copy.
 
     Policy (must match User Dashboard):
-      * No CC-* group membership  -> unrestricted. Delete GSSLOGIN.DIR so
-        Global Shop shows every company code.
       * One or more CC-* groups   -> write GSSLOGIN.DIR listing those codes.
         SELECTEDCOMPANYCODE comes from the AD comment field (GSSCC:CODE)
         when that code is still assigned; otherwise the first assigned code
         is used.
+      * No CC-* group membership:
+          - If $CoexistenceWithLegacyGpo is $true (default): do not touch
+            GSSLOGIN.DIR. Whatever this customer's existing GPO already
+            copied (any group name, any combination) is left in place.
+          - If $false: unrestricted. Delete GSSLOGIN.DIR so Global Shop
+            shows every company code. Use this only after the old GPOs are
+            disabled.
 
     Membership is read from AD (not the logon token) so a group change in
     User Dashboard takes effect on the next full logoff/logon even if a
@@ -42,6 +47,14 @@ $PrimaryAttribute = 'comment'
 $PrimaryMarker    = 'GSSCC:'
 $ListSeparator    = '*!*'
 $DestFileName     = 'GSSLOGIN.DIR'
+
+# Existing environments still have their own company-code GPOs (names and
+# combinations differ per customer) that copy a static GSSLOGIN.DIR. While
+# those GPOs are linked, a user with no CC-* groups is a *legacy* user, not
+# an unrestricted one. Leave their file alone.
+# Set this to $false after every user is on CC-* groups and the old GPOs are
+# disabled, so unassigned users see every company code.
+$CoexistenceWithLegacyGpo = $true
 
 function Write-CcLog {
     param([string]$Message)
@@ -145,6 +158,10 @@ try {
     Write-CcLog ("AD codes=[{0}] storedPrimary={1}" -f ($codes -join ','), $state.Primary)
 
     if ($codes.Count -eq 0) {
+        if ($CoexistenceWithLegacyGpo) {
+            Write-CcLog 'No CC-* groups; coexistence on - leaving GSSLOGIN.DIR for legacy GPOs.'
+            exit 0
+        }
         foreach ($p in $paths) { Remove-GssLoginFile -Path $p }
         Write-CcLog 'Unrestricted (no CC-* groups).'
         exit 0
